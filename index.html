@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>대면 통역</title>
+<style>
+:root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--fg:#e8eaf0;--mute:#8a92a6;--me:#4f8cff;--them:#22c58b;--warn:#ff6b5b}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:-apple-system,"Apple SD Gothic Neo","Noto Sans KR","PingFang SC",sans-serif}
+body{display:flex;flex-direction:column;height:100dvh;overflow:hidden}
+.half{flex:1;min-height:0;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:10px}
+#top{transform:rotate(180deg);border-bottom:1px solid var(--line)}
+.flipped #top{transform:none}
+.line{padding:10px 12px;border-radius:12px;background:var(--panel);font-size:22px;line-height:1.35}
+.line small{display:block;font-size:13px;color:var(--mute);margin-top:4px}
+.line.me{border-left:4px solid var(--me)}
+.line.them{border-left:4px solid var(--them)}
+.line.live{opacity:.65}
+.empty{color:var(--mute);font-size:15px;margin:auto;text-align:center}
+#bar{display:flex;gap:8px;padding:8px 12px calc(8px + env(safe-area-inset-bottom));background:var(--panel);border-top:1px solid var(--line);align-items:center;flex-wrap:wrap}
+button,select,input,textarea{font:inherit;color:var(--fg);background:#222734;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+button{cursor:pointer}
+button.primary{background:var(--me);border-color:var(--me);font-weight:600}
+button.stop{background:var(--warn);border-color:var(--warn)}
+button.ptt{flex:1;font-size:18px;padding:16px 8px;touch-action:none;user-select:none}
+button.ptt.on{outline:3px solid #fff}
+#ptt-me{background:#1d3a75}#ptt-them{background:#145a43}
+#status{font-size:13px;color:var(--mute);flex:1;min-width:120px}
+.sheet{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:flex-end;z-index:10}
+.sheet.open{display:flex}
+.sheet>div{background:var(--panel);width:100%;max-height:90dvh;overflow:auto;padding:16px;border-radius:16px 16px 0 0}
+.sheet h3{margin:4px 0 12px}
+.sheet label{display:block;font-size:13px;color:var(--mute);margin:12px 0 4px}
+.sheet input,.sheet select,.sheet textarea{width:100%}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+#card{position:fixed;inset:0;background:#000;display:none;flex-direction:column;align-items:center;justify-content:center;z-index:20;padding:24px;text-align:center}
+#card.open{display:flex}
+#card .big{font-size:56px;font-weight:700;transform:rotate(180deg)}
+#card .small{font-size:28px;color:var(--mute);margin-top:24px}
+#terms{display:flex;gap:6px;overflow-x:auto;padding:6px 12px;background:var(--bg);border-top:1px solid var(--line)}
+#terms:empty{display:none}
+#terms button{white-space:nowrap;padding:6px 10px;font-size:14px}
+.log{padding:10px;border:1px solid var(--line);border-radius:10px;margin-top:8px;font-size:14px}
+pre{white-space:pre-wrap;font-size:13px;background:#0b0d11;padding:10px;border-radius:10px}
+</style>
+</head>
+<body>
+<div id="top" class="half"><div class="empty" id="top-empty">对方看这里 · Partner side</div></div>
+<div id="bottom" class="half"><div class="empty" id="bot-empty">설정에서 API 키 입력 → 시작</div></div>
+<div id="terms"></div>
+<div id="bar">
+  <button id="btn-start" class="primary">시작</button>
+  <button id="ptt-me" class="ptt" hidden>나 (한국어)</button>
+  <button id="ptt-them" class="ptt" hidden>상대</button>
+  <span id="status">대기</span>
+  <button id="btn-voice" title="음성 출력">🔊</button>
+  <button id="btn-log">기록</button>
+  <button id="btn-set">⚙</button>
+</div>
+
+<div class="sheet" id="sheet-set"><div>
+  <h3>설정</h3>
+  <label>OpenAI API 키 (이 기기에만 저장)</label>
+  <input id="s-key" type="password" placeholder="sk-...">
+  <label>상대 언어</label>
+  <select id="s-lang"><option value="zh">중국어</option><option value="en">영어</option></select>
+  <label>모드</label>
+  <select id="s-mode"><option value="auto">자동 (손대지 않고 대화)</option><option value="ptt">버튼 (누르는 동안만 인식 — 소음 환경)</option></select>
+  <label>무음 자동 종료 (분)</label>
+  <input id="s-idle" type="number" min="1" max="30" value="3">
+  <label>요약 모델</label>
+  <input id="s-model" value="gpt-5.4-mini">
+  <label>용어집 — 한 줄에 하나: 한국어=상대언어 (하단 용어 카드: 탭하면 상대에게 크게 표시)</label>
+  <textarea id="s-gloss" rows="6" placeholder="본선인도=FOB&#10;부가세 환급=增值税退税&#10;품번=货号"></textarea>
+  <div class="row">
+    <button class="primary" id="s-save">저장</button>
+    <button id="s-flip">상단 화면 회전 토글</button>
+    <button id="s-close">닫기</button>
+  </div>
+</div></div>
+
+<div class="sheet" id="sheet-log"><div>
+  <h3>회의 기록</h3>
+  <div class="row">
+    <button id="l-txt">현재 기록 TXT 저장</button>
+    <button id="l-sum" class="primary">요약·액션아이템</button>
+    <button id="l-clear">현재 기록 삭제</button>
+    <button id="l-close">닫기</button>
+  </div>
+  <pre id="l-out" hidden></pre>
+  <div id="l-list"></div>
+</div></div>
+
+<div id="card"><div class="big" id="card-big"></div><div class="small" id="card-small"></div></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const LS = {
+  get(k, d){ try{ const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v) }catch(e){ return d } },
+  set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)) }catch(e){} }
+};
+const cfg = Object.assign({key:'', lang:'zh', mode:'auto', idle:3, model:'gpt-5.4-mini', gloss:'', flip:false, voice:true}, LS.get('cfg', {}));
+const LANG_NAME = {ko:'한국어', zh:'中文', en:'English'};
+let log = LS.get('log_current', []);          // {t, who, src, dst}
+let sessions = {};                              // target -> {pc, track, audio}
+let mic = null, running = false, wakeLock = null, idleTimer = null, startedAt = 0, tick = null;
+let buf = {src:'', dstMe:'', dstThem:'', who:null, t0:0, lat:null}, flushTimer = null;
+let unlocked = [];
+
+/* ---------- glossary ---------- */
+function glossary(){
+  return cfg.gloss.split('\n').map(l => l.split('=')).filter(p => p.length === 2 && p[0].trim() && p[1].trim())
+    .map(([a,b]) => ({ko:a.trim(), other:b.trim()}));
+}
+function fixText(text, target){
+  // 결과 자막 보정: 상대언어 자막 → 용어집 상대언어 표기 강제는 불가(원문 매칭 불가) / 한국어 자막에서 상대언어 표기가 섞이면 한국어로 치환
+  let out = text;
+  for (const g of glossary()){
+    if (target === 'ko') out = out.split(g.other).join(g.ko);
+  }
+  return out;
+}
+function renderTerms(){
+  const box = $('#terms'); box.innerHTML = '';
+  for (const g of glossary()){
+    const b = document.createElement('button');
+    b.textContent = g.ko;
+    b.onclick = () => { $('#card-big').textContent = g.other; $('#card-small').textContent = g.ko; $('#card').classList.add('open'); };
+    box.appendChild(b);
+  }
+}
+$('#card').onclick = () => $('#card').classList.remove('open');
+
+/* ---------- render ---------- */
+const hasHangul = s => /[가-힣]/.test(s);
+function lineEl(text, sub, who, live){
+  const d = document.createElement('div');
+  d.className = 'line ' + who + (live ? ' live' : '');
+  d.textContent = text;
+  if (sub){ const s = document.createElement('small'); s.textContent = sub; d.appendChild(s); }
+  return d;
+}
+function render(){
+  const top = $('#top'), bot = $('#bottom');
+  top.innerHTML = ''; bot.innerHTML = '';
+  const recent = log.slice(-30);
+  for (const e of recent){
+    if (e.who === 'me'){
+      bot.appendChild(lineEl(e.src, e.dst, 'me'));
+      top.appendChild(lineEl(e.dst || '…', e.src, 'me'));
+    } else {
+      bot.appendChild(lineEl(e.dst || '…', e.src, 'them'));
+      top.appendChild(lineEl(e.src, e.dst, 'them'));
+    }
+  }
+  // live
+  if (buf.src || buf.dstMe || buf.dstThem){
+    const who = buf.who || (hasHangul(buf.src) ? 'me' : 'them');
+    if (who === 'me'){
+      bot.appendChild(lineEl(buf.src, buf.dstMe, 'me', true));
+      top.appendChild(lineEl(buf.dstMe || '…', '', 'me', true));
+    } else {
+      bot.appendChild(lineEl(fixText(buf.dstThem,'ko') || '…', buf.src, 'them', true));
+      top.appendChild(lineEl(buf.src, '', 'them', true));
+    }
+  }
+  if (!top.children.length) top.innerHTML = '<div class="empty">对方看这里 · Partner side</div>';
+  if (!bot.children.length) bot.innerHTML = '<div class="empty">' + (cfg.key ? '시작을 누르고 말하세요' : '설정에서 API 키 입력 → 시작') + '</div>';
+  bot.scrollTop = bot.scrollHeight; top.scrollTop = top.scrollHeight;
+}
+
+/* ---------- transcript assembly ---------- */
+function touch(){
+  clearTimeout(flushTimer); flushTimer = setTimeout(flush, 1600);
+  clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (running){ stop(); setStatus('무음 ' + cfg.idle + '분 → 자동 종료'); } }, cfg.idle * 60000);
+  render();
+}
+function flush(){
+  if (!buf.src && !buf.dstMe && !buf.dstThem){ return; }
+  const who = buf.who || (hasHangul(buf.src) ? 'me' : 'them');
+  const dst = who === 'me' ? buf.dstMe : fixText(buf.dstThem, 'ko');
+  log.push({t: Date.now(), who, src: buf.src.trim(), dst: dst.trim(), lat: buf.lat});
+  LS.set('log_current', log);
+  buf = {src:'', dstMe:'', dstThem:'', who: buf.who && cfg.mode === 'ptt' ? buf.who : null, t0:0, lat:null};
+  render();
+}
+function onEvent(target, e){
+  const other = cfg.lang;
+  if (e.type === 'session.input_transcript.delta'){
+    if (target === 'ko') { if (!buf.t0) buf.t0 = performance.now(); buf.src += e.delta; touch(); }   // 원문은 한쪽 세션에서만 수집(중복 방지)
+  } else if (e.type === 'session.output_transcript.delta'){
+    if (buf.lat === null && buf.t0) buf.lat = Math.round((performance.now() - buf.t0) / 100) / 10; // 발화 인식 시작 → 번역 시작(초)
+    if (target === other) buf.dstMe += e.delta; else buf.dstThem += e.delta;
+    touch();
+  } else if (e.type === 'error' || (e.error && e.type)){
+    setStatus('오류: ' + (e.error?.message || e.type));
+  }
+}
+
+/* ---------- OpenAI realtime translate (WebRTC) ---------- */
+async function clientSecret(target){
+  const r = await fetch('https://api.openai.com/v1/realtime/translations/client_secrets', {
+    method:'POST',
+    headers:{Authorization:'Bearer ' + cfg.key, 'Content-Type':'application/json'},
+    body: JSON.stringify({session:{model:'gpt-realtime-translate', audio:{output:{language: target}}}})
+  });
+  if (!r.ok) throw new Error('키 발급 실패 ' + r.status + ': ' + (await r.text()).slice(0,200));
+  const j = await r.json();
+  return j.value || j.client_secret?.value;
+}
+async function openSession(target){
+  const secret = await clientSecret(target);
+  const pc = new RTCPeerConnection();
+  const track = mic.getAudioTracks()[0].clone();
+  pc.addTrack(track, new MediaStream([track]));
+  const audio = unlocked.pop() || new Audio(); audio.autoplay = true; audio.playsInline = true; audio.setAttribute('playsinline',''); audio.muted = !cfg.voice;
+  pc.ontrack = ({streams}) => { audio.srcObject = streams[0]; audio.play().catch(() => setStatus('소리 차단됨 — 화면 한 번 터치')); };
+  const dc = pc.createDataChannel('oai-events');
+  dc.onmessage = ({data}) => { try{ onEvent(target, JSON.parse(data)) }catch(err){} };
+  pc.onconnectionstatechange = () => {
+    if (['failed','disconnected'].includes(pc.connectionState) && running) setStatus('연결 끊김 — 로밍 데이터 확인 후 재시작');
+  };
+  await pc.setLocalDescription(await pc.createOffer());
+  const r = await fetch('https://api.openai.com/v1/realtime/translations/calls', {
+    method:'POST',
+    headers:{Authorization:'Bearer ' + secret, 'Content-Type':'application/sdp'},
+    body: pc.localDescription.sdp
+  });
+  if (!r.ok) throw new Error('연결 실패 ' + r.status + ': ' + (await r.text()).slice(0,200));
+  await pc.setRemoteDescription({type:'answer', sdp: await r.text()});
+  return {pc, track, audio};
+}
+async function start(){
+  if (!cfg.key){ openSheet('set'); return; }
+  setStatus('연결 중…'); $('#btn-start').disabled = true;
+  try{
+    mic = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true, noiseSuppression:true, autoGainControl:true}});
+    const [a, b] = await Promise.all([openSession('ko'), openSession(cfg.lang)]);
+    sessions = {ko:a, [cfg.lang]:b};
+    running = true; startedAt = Date.now();
+    applyMode();
+    try{ wakeLock = await navigator.wakeLock?.request('screen') }catch(e){}
+    tick = setInterval(() => setStatus('통역 중 ' + fmtMin(Date.now() - startedAt) + ' · ' + LANG_NAME.ko + '↔' + LANG_NAME[cfg.lang]), 1000);
+    touch();
+  }catch(err){
+    stop(); setStatus(String(err.message || err));
+  }
+  $('#btn-start').disabled = false; syncStartBtn();
+}
+function stop(){
+  flush();
+  running = false;
+  for (const s of Object.values(sessions)){ try{ s.track.stop(); s.pc.close(); s.audio.srcObject = null }catch(e){} }
+  sessions = {};
+  if (mic){ mic.getTracks().forEach(t => t.stop()); mic = null; }
+  clearInterval(tick); clearTimeout(idleTimer);
+  try{ wakeLock?.release() }catch(e){} wakeLock = null;
+  if (startedAt){ LS.set('minutes', LS.get('minutes', 0) + (Date.now() - startedAt) / 60000); startedAt = 0; }
+  setStatus('종료 · 누적 ' + LS.get('minutes', 0).toFixed(1) + '분');
+  syncStartBtn(); applyMode();
+}
+function fmtMin(ms){ const s = Math.floor(ms/1000); return Math.floor(s/60) + ':' + String(s%60).padStart(2,'0'); }
+function setStatus(t){ $('#status').textContent = t; }
+function syncStartBtn(){ const b = $('#btn-start'); b.textContent = running ? '종료' : '시작'; b.className = running ? 'stop' : 'primary'; }
+// 아이폰: 터치 직후 동기적으로 재생기 활성화해야 이후 음성 재생 허용
+const SILENT = 'data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
+function unlockAudio(){ unlocked = [0,1].map(() => { const a = new Audio(SILENT); a.playsInline = true; a.setAttribute('playsinline',''); a.play().catch(()=>{}); return a; }); }
+$('#btn-start').onclick = () => { if (running) stop(); else { unlockAudio(); start(); } };
+document.addEventListener('touchend', () => { for (const s of Object.values(sessions)) if (s.audio.paused && s.audio.srcObject) s.audio.play().catch(()=>{}); });
+
+/* ---------- mode: auto vs push-to-talk ---------- */
+function setTalk(who){
+  // 버튼 모드: 나 → 상대언어 세션만 마이크 ON / 상대 → 한국어 세션만 ON
+  const toOther = sessions[cfg.lang], toKo = sessions.ko;
+  if (toOther) toOther.track.enabled = who === 'me';
+  if (toKo) toKo.track.enabled = who === 'them' || who === 'me'; // 원문 자막은 ko 세션 입력에서 수집
+  if (toKo && who === 'me') toKo.audio.muted = true; else if (toKo) toKo.audio.muted = !cfg.voice;
+  if (who){ flush(); buf.who = who; }
+  $('#ptt-me').classList.toggle('on', who === 'me'); $('#ptt-them').classList.toggle('on', who === 'them');
+}
+function applyMode(){
+  const ptt = cfg.mode === 'ptt' && running;
+  $('#ptt-me').hidden = !ptt; $('#ptt-them').hidden = !ptt;
+  $('#ptt-them').textContent = '상대 (' + LANG_NAME[cfg.lang] + ')';
+  if (!running) return;
+  if (cfg.mode === 'ptt') setTalk(null);
+  else { for (const s of Object.values(sessions)){ s.track.enabled = true; s.audio.muted = !cfg.voice; } buf.who = null; }
+}
+for (const [id, who] of [['#ptt-me','me'],['#ptt-them','them']]){
+  const b = $(id);
+  b.addEventListener('pointerdown', e => { e.preventDefault(); setTalk(who); });
+  const up = () => setTimeout(() => setTalk(null), 700); // 말꼬리 보존
+  b.addEventListener('pointerup', up); b.addEventListener('pointerleave', up); b.addEventListener('pointercancel', up);
+}
+
+/* ---------- voice toggle ---------- */
+function syncVoice(){ $('#btn-voice').textContent = cfg.voice ? '🔊' : '🔇'; for (const s of Object.values(sessions)) s.audio.muted = !cfg.voice; }
+$('#btn-voice').onclick = () => { cfg.voice = !cfg.voice; LS.set('cfg', cfg); syncVoice(); };
+
+/* ---------- settings ---------- */
+function openSheet(n){
+  if (n === 'set'){
+    $('#s-key').value = cfg.key; $('#s-lang').value = cfg.lang; $('#s-mode').value = cfg.mode;
+    $('#s-idle').value = cfg.idle; $('#s-model').value = cfg.model; $('#s-gloss').value = cfg.gloss;
+  } else renderLogList();
+  $('#sheet-' + n).classList.add('open');
+}
+function closeSheets(){ document.querySelectorAll('.sheet').forEach(s => s.classList.remove('open')); }
+$('#btn-set').onclick = () => openSheet('set');
+$('#btn-log').onclick = () => openSheet('log');
+$('#s-close').onclick = closeSheets; $('#l-close').onclick = closeSheets;
+$('#s-save').onclick = () => {
+  const langChanged = cfg.lang !== $('#s-lang').value;
+  Object.assign(cfg, {key: $('#s-key').value.trim(), lang: $('#s-lang').value, mode: $('#s-mode').value,
+    idle: Math.max(1, +$('#s-idle').value || 3), model: $('#s-model').value.trim() || 'gpt-5.4-mini', gloss: $('#s-gloss').value});
+  LS.set('cfg', cfg); renderTerms(); closeSheets();
+  if (running && langChanged){ stop(); setStatus('언어 변경 → 다시 시작하세요'); }
+  applyMode(); render();
+};
+$('#s-flip').onclick = () => { cfg.flip = !cfg.flip; LS.set('cfg', cfg); document.body.classList.toggle('flipped', cfg.flip); };
+
+/* ---------- log / export / summary ---------- */
+function toText(entries){
+  return entries.map(e => {
+    const tm = new Date(e.t).toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'});
+    return '[' + tm + '] ' + (e.who === 'me' ? '나' : '상대') + ': ' + e.src + '\n          → ' + e.dst + (e.lat != null ? '  (지연 ' + e.lat + '초)' : '');
+  }).join('\n');
+}
+function download(name, text){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], {type:'text/plain;charset=utf-8'}));
+  a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+const stamp = () => new Date().toISOString().slice(0,16).replace(/[-:T]/g,'');
+$('#l-txt').onclick = () => {
+  const extra = $('#l-out').hidden ? '' : '\n\n===== 요약 =====\n' + $('#l-out').textContent;
+  download('통역기록_' + stamp() + '.txt', toText(log) + '\n\n' + latStat(log) + extra);
+};
+$('#l-clear').onclick = () => {
+  if (!log.length) return;
+  if (!confirm('현재 기록을 보관함으로 옮기고 화면을 비울까요?')) return;
+  const arch = LS.get('log_archive', []); arch.unshift({t: Date.now(), entries: log}); LS.set('log_archive', arch.slice(0, 30));
+  log = []; LS.set('log_current', log); $('#l-out').hidden = true; render(); renderLogList();
+};
+$('#l-sum').onclick = async () => {
+  if (!log.length){ alert('기록 없음'); return; }
+  const out = $('#l-out'); out.hidden = false; out.textContent = '요약 생성 중…';
+  try{
+    const r = await fetch('https://api.openai.com/v1/responses', {
+      method:'POST', headers:{Authorization:'Bearer ' + cfg.key, 'Content-Type':'application/json'},
+      body: JSON.stringify({model: cfg.model, input:
+        '다음은 한국어↔' + LANG_NAME[cfg.lang] + ' 대면 미팅 통역 기록이다. 한국어 개조식으로 출력: ' +
+        '1) 핵심 요약 5줄 이내 2) 합의 사항(수량·단가·납기·조건 숫자 그대로) 3) 액션아이템(담당·기한) 4) 번역 오류 의심 구간. 서론 금지.\n\n' + toText(log)})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error?.message || r.status);
+    out.textContent = j.output_text || (j.output || []).flatMap(o => o.content || []).map(c => c.text || '').join('\n');
+  }catch(err){ out.textContent = '요약 실패: ' + (err.message || err) + '\n(설정의 요약 모델명 확인)'; }
+};
+function latStat(entries){
+  const v = entries.map(e => e.lat).filter(x => x != null).sort((a,b) => a-b);
+  if (!v.length) return '지연 측정값 없음';
+  const avg = v.reduce((a,b) => a+b, 0) / v.length, p90 = v[Math.min(v.length-1, Math.floor(v.length*0.9))];
+  return '지연 통계: ' + v.length + '문장 · 평균 ' + avg.toFixed(1) + '초 · 90% ' + p90 + '초 이내 · 최대 ' + v[v.length-1] + '초';
+}
+function renderLogList(){
+  const box = $('#l-list'); box.innerHTML = '<div class="log">현재 기록 ' + latStat(log) + '</div>';
+  const arch = LS.get('log_archive', []);
+  if (!arch.length){ box.innerHTML += '<div class="log">보관된 기록 없음</div>'; return; }
+  arch.forEach((a, i) => {
+    const d = document.createElement('div'); d.className = 'log';
+    d.textContent = new Date(a.t).toLocaleString('ko-KR') + ' · ' + a.entries.length + '문장 ';
+    const b = document.createElement('button'); b.textContent = 'TXT';
+    b.onclick = () => download('통역기록_보관' + (i+1) + '.txt', toText(a.entries));
+    d.appendChild(b); box.appendChild(d);
+  });
+}
+
+/* ---------- init ---------- */
+document.body.classList.toggle('flipped', cfg.flip);
+syncVoice(); renderTerms(); render(); applyMode();
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && running && !wakeLock){ try{ wakeLock = await navigator.wakeLock?.request('screen') }catch(e){} }
+});
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
