@@ -78,9 +78,12 @@ pre{white-space:pre-wrap;font-size:13px;background:#0b0d11;padding:10px;border-r
   <textarea id="s-gloss" rows="6" placeholder="본선인도=FOB&#10;부가세 환급=增值税退税&#10;품번=货号"></textarea>
   <div class="row">
     <button class="primary" id="s-save">저장</button>
+    <button id="s-test">연결 점검 (무과금)</button>
     <button id="s-flip">상단 화면 회전 토글</button>
     <button id="s-close">닫기</button>
   </div>
+  <div class="log" id="s-test-out" hidden></div>
+  <div class="log">해외에서는 와이파이를 끄고 <b>한국 통신사 로밍 데이터</b>로만 사용. 현지 와이파이·현지 유심은 차단됨.</div>
 </div></div>
 
 <div class="sheet" id="sheet-log"><div>
@@ -322,6 +325,27 @@ $('#s-save').onclick = () => {
   applyMode(); render();
 };
 $('#s-flip').onclick = () => { cfg.flip = !cfg.flip; LS.set('cfg', cfg); document.body.classList.toggle('flipped', cfg.flip); };
+// 연결 점검: 토큰 발급만 수행(오디오 세션 미개설) → 통역 요금 발생 안 함
+$('#s-test').onclick = async () => {
+  const out = $('#s-test-out'); out.hidden = false;
+  const key = $('#s-key').value.trim() || cfg.key;
+  if (!key){ out.textContent = '✕ API 키를 먼저 입력'; return; }
+  out.textContent = '점검 중…';
+  const t0 = performance.now();
+  try{
+    const r = await fetch('https://api.openai.com/v1/realtime/translations/client_secrets', {
+      method:'POST', headers:{Authorization:'Bearer ' + key, 'Content-Type':'application/json'},
+      body: JSON.stringify({session:{model:'gpt-realtime-translate', audio:{output:{language: $('#s-lang').value}}}})
+    });
+    const ms = Math.round(performance.now() - t0);
+    if (r.ok){ out.innerHTML = '✓ 정상 — 서버 응답 ' + ms + 'ms<br>이 회선에서 통역 사용 가능'; return; }
+    const msg = {401:'키가 틀렸거나 폐기됨', 403:'이 지역·회선에서 접속 차단 — 로밍 데이터로 전환',
+                 429:'크레딧 부족 또는 한도 초과', 404:'모델 사용 권한 없음'}[r.status] || (await r.text()).slice(0,120);
+    out.textContent = '✕ ' + r.status + ' — ' + msg;
+  }catch(err){
+    out.innerHTML = '✕ 서버에 닿지 못함 — 네트워크 차단 가능성<br>와이파이 끄고 한국 통신사 로밍 데이터로 재시도';
+  }
+};
 
 /* ---------- log / export / summary ---------- */
 function toText(entries){
